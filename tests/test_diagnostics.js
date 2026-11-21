@@ -13,6 +13,7 @@ check('not enough credit','NO_CREDIT','رصيد');
 check('wrong password','INVALID_PASSWORD','كلمة المرور');
 check('invalid username','INVALID_USERNAME','الكرت خطأ');
 check('radius timeout','AUTH_SERVER_UNAVAILABLE','خادم');
+check('no valid profile','NO_VALID_PROFILE','باقة فعالة');
 check('access-reject','REJECTED','تعذر تسجيل الدخول');
 assert.equal(p.isLoggedIn('yes'),true);assert.equal(p.isLoggedIn('no'),false);
 assert.equal(p.normalize('۱۲٣٤ ٥',true),'12345');

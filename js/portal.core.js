@@ -8,6 +8,8 @@ var statusTimer = 0, errorTimer = 0, blockTimer = 0;
 var statusRequest = null, statusFailures = 0, epoch = 0;
 var loginTimestamp = 0, earlyNegativeCount = 0;
 var recentCards = [];
+var REMEMBER_PREF = 'jawhara_remember_cards_opt_in_v1';
+var LOGIN_ERROR_KEY = 'jawhara_2_login_error_20261121';
 var STORE = cfg.storageKey || 'hotspot_saved_cards_v3';
 var BLOCK_STORE = cfg.blockKey || 'hotspot_browser_attempts_v3';
 var HISTORY_TTL = 30 * 24 * 60 * 60 * 1000;
@@ -88,9 +90,8 @@ code = 'TEMP_LOCK'; message = 'محاولات كثيرة، حاول لاحقا';
 } else if (/\b(?:quota exceeded|usage limit reached|limit reached)\b|تم تجاوز حد الاستخدام/.test(t)) {
 code = 'UNSPECIFIED_LIMIT'; message = 'بلغ الكرت حد الاستخدام';
 } else if (/\b(?:no valid profile(?: found)?|no profile available|no active profile)\b|لا توجد باقة صالحة/.test(t)) {
-/* No valid profile does not reveal whether the user is unknown, inactive, or
-   has no usable plan. Follow the requested generic bad-card UX here. */
-code = 'NO_VALID_PROFILE'; message = BAD_CARD_MESSAGE;
+/* RouterOS explicitly reports that no usable profile is attached. */
+code = 'NO_VALID_PROFILE'; message = 'لا توجد باقة فعالة لهذا الحساب';
 } else if (/\b(?:user(?:name)?\s+(?:does not exist|not found|unknown)|unknown user(?:name)?|no such user|user not found|account not found|no such account)\b|(?:رقم الكرت|اسم المستخدم|الحساب) غير موجود|لا يوجد (?:حساب|مستخدم) بهذا/.test(t)) {
 code = 'USER_NOT_FOUND'; message = BAD_CARD_MESSAGE;
 } else if (/\b(?:invalid username|invalid user name|invalid user)(?!\s+(?:or|and|&)\s+password)\b/.test(t)) {
@@ -109,7 +110,7 @@ code = 'SERVER_ARABIC'; message = UNCONFIRMED_MESSAGE;
 message = UNCONFIRMED_MESSAGE;
 }
 return { code:code, message:message,
-confirmed:code !== 'UNKNOWN' && code !== 'REJECTED' && code !== 'NO_VALID_PROFILE' && code !== 'SERVER_ARABIC',
+confirmed:code !== 'UNKNOWN' && code !== 'REJECTED' && code !== 'SERVER_ARABIC',
 credentialFailure: code === 'USER_NOT_FOUND' || code === 'INVALID_USERNAME' || code === 'INVALID_CREDENTIALS' || code === 'INVALID_PASSWORD' };
 }
 function readableError(raw) { return classifyHotspotError(raw, !!cfg.passwordRequired).message; }
@@ -123,11 +124,13 @@ errorTimer = setTimeout(function () { removeClass($error, 'show'); }, 8500);
 function clearError() { clearTimeout(errorTimer); setText($error, ''); removeClass($error, 'show'); }
 /* Carry the original RouterOS error from a direct /login page back to the portal. */
 function showRedirectedLoginError() {
-var key = 'jawhara_2_login_error_20261121', store = safeSession(), saved = storageGet(store, key);
+var key = LOGIN_ERROR_KEY, store = safeSession(), saved = storageGet(store, key);
 if (saved) storageRemove(store, key);
 var query = w.location && w.location.search || '';
 var match = /(?:^|[?&])hotspot_error=([^&]{1,1024})/.exec(query);
 if (!saved && match) saved = match[1];
+var initial = el('routerInitialError');
+if (!saved && initial) saved = initial.getAttribute('data-original') || initial.getAttribute('data-translated') || '';
 if (saved) showError(readableError(saved));
 }
 function loginOpen() {
@@ -181,16 +184,18 @@ storeBlock(state);
 if (state.until > now()) blockTick();
 }
 function resetBadCredentials() { storeBlock({count:0,until:0}); unblock(); }
-function parseCards(text) {
+function parseCards(text, legacyTimestamp) {
 var list; try { list = JSON.parse(text); } catch (ignore) { return []; }
 if (!list || Object.prototype.toString.call(list) !== '[object Array]') return [];
-var out = [], seen = {};
+var out = [], seen = {}, time = now();
 for (var i = 0; i < list.length && out.length < 2; i++) {
 var item = list[i], user = typeof item === 'string' ? item : item && item.username;
 var pass = item && typeof item.password === 'string' ? item.password : '';
+var itemTime = Number(item && item.savedAt || legacyTimestamp || 0);
 if (typeof user !== 'string' || !user || user.length > 64 || pass.length > 128 || seen['#'+user]) continue;
+if (!isFinite(itemTime) || itemTime <= 0 || itemTime > time || time - itemTime >= HISTORY_TTL) continue;
 seen['#'+user] = true;
-out.push({username:user,password:cfg.passwordRequired?pass:''});
+out.push({username:user,password:cfg.passwordRequired?pass:'',savedAt:itemTime});
 }
 return out;
 }
@@ -204,29 +209,35 @@ return null;
 }
 function deleteLegacyCookie(key) { d.cookie = key + '=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; SameSite=Lax'; }
 function saveCards() {
-return storageSet(safeLocal(), STORE, JSON.stringify({savedAt:now(),cards:recentCards}));
+return storageSet(safeLocal(), STORE, JSON.stringify({cards:recentCards}));
+}
+function rememberEnabled() {
+var input = el('rememberCards');
+return !!(input && input.checked);
+}
+function initRememberCards() {
+var input = el('rememberCards'); if (!input) return;
+input.checked = storageGet(safeLocal(), REMEMBER_PREF) === 'yes';
+input.addEventListener('change', function () {
+if (input.checked) storageSet(safeLocal(), REMEMBER_PREF, 'yes');
+else storageRemove(safeLocal(), REMEMBER_PREF);
+}, false);
 }
 function migrateCards() {
-var migrated = [];
+/* Preserve the recorded age of existing cards; never resurrect an undated
+   password cookie as a fresh 30-day credential. Clear obsolete cookies. */
 var oldStorage = storageGet(safeLocal(), 'jawhara_success_cards_v2'), old;
 try { old = oldStorage ? JSON.parse(oldStorage) : null; } catch (ignore) { old = null; }
-if (old && old.savedAt && now() >= old.savedAt && now() - old.savedAt < HISTORY_TTL)
-migrated = parseCards(JSON.stringify(old.cards || []));
-if (!migrated.length) migrated = parseCards(cookieValue('savedHotspotCards') || '[]');
-if (migrated.length) {
-recentCards = migrated;
-if (saveCards()) {
-storageRemove(safeLocal(), 'jawhara_success_cards_v2');
+recentCards = parseCards(JSON.stringify(old && old.cards || []), old && old.savedAt);
+if (recentCards.length && saveCards()) storageRemove(safeLocal(), 'jawhara_success_cards_v2');
 deleteLegacyCookie('savedHotspotCards');
-}
-}
 }
 function loadCards() {
 var raw = storageGet(safeLocal(), STORE), stored;
 try { stored = raw ? JSON.parse(raw) : null; } catch (ignore) { stored = null; }
-if (stored && typeof stored.savedAt === 'number' && stored.savedAt <= now() && now() - stored.savedAt < HISTORY_TTL) {
-recentCards = parseCards(JSON.stringify(stored.cards));
-return;
+if (stored && stored.cards) {
+recentCards = parseCards(JSON.stringify(stored.cards), stored.savedAt);
+if (recentCards.length) { saveCards(); return; }
 }
 if (raw) storageRemove(safeLocal(), STORE);
 recentCards = []; migrateCards();
@@ -234,7 +245,7 @@ recentCards = []; migrateCards();
 function rememberCard(user, pass) {
 if (!user || user.length > 64) return;
 loadCards();
-var saved = [{username:user,password:cfg.passwordRequired ? pass : ''}];
+var saved = [{username:user,password:cfg.passwordRequired ? pass : '',savedAt:now()}];
 for (var i = 0; i < recentCards.length && saved.length < 2; i++) {
 if (recentCards[i].username !== user) saved.push(recentCards[i]);
 }
@@ -271,6 +282,8 @@ list.appendChild(button);
 function clearCards() {
 recentCards = []; storageRemove(safeLocal(), STORE);
 storageRemove(safeLocal(), 'jawhara_success_cards_v2');
+storageRemove(safeLocal(), REMEMBER_PREF);
+var remember = el('rememberCards'); if (remember) remember.checked = false;
 deleteLegacyCookie('savedHotspotCards'); deleteLegacyCookie('username');
 renderCards();
 }
@@ -299,6 +312,14 @@ function resetStatus() {
 var ids = ['username','remain_bytes_total','session_time_left','uptime','bytes_in','bytes_out'];
 for (var i = 0; i < ids.length; i++) setText(el(ids[i]), i === 0 || ids[i] === 'uptime' ? '---' : 'غير متاح');
 }
+function routeUrl(name) {
+var url = cfg[name + 'Url'];
+if (typeof url !== 'string' || !/^https?:\/\/[^\s]+$|^\/[^\/]/i.test(url)) {
+  return name === 'login' ? '/login' : name === 'status' ? '/status' : '/logout';
+}
+return url;
+}
+function addQuery(url, query) { return url + (url.indexOf('?') === -1 ? '?' : '&') + query; }
 function stopStatus() {
 clearTimeout(statusTimer); statusTimer = 0;
 if (statusRequest && statusRequest.abort && !statusRequest._portalComplete) { try { statusRequest.abort(); } catch (ignore) {} }
@@ -307,15 +328,16 @@ statusRequest = null;
 function scheduleStatus() {
 clearTimeout(statusTimer);
 if (!signedIn || logoutPending) return;
-var delay = earlyNegativeCount && now() - loginTimestamp < 15000 ? 1500 : (d.hidden ? 20000 : 8000);
+var base = d.hidden ? 60000 : 30000;
+var delay = earlyNegativeCount && now() - loginTimestamp < 15000 ? 1500 : Math.min(base * Math.pow(2, Math.min(statusFailures, 3)), 240000);
 statusTimer = setTimeout(function () {
 if (!signedIn || logoutPending) return;
-statusRequest = request('/status?var=callBack&t=' + now(), {kind:'status', next:scheduleStatus});
+statusRequest = request(addQuery(routeUrl('status'), 'var=callBack&t=' + now()), {kind:'status', next:scheduleStatus});
 }, delay);
 }
 function startStatus() {
 stopStatus();
-if (signedIn && !logoutPending) statusRequest = request('/status?var=callBack&t=' + now(), {kind:'status', next:scheduleStatus});
+if (signedIn && !logoutPending) statusRequest = request(addQuery(routeUrl('status'), 'var=callBack&t=' + now()), {kind:'status', next:scheduleStatus});
 }
 function statusReply(response) {
 statusFailures = 0;
@@ -341,7 +363,7 @@ if (!isLoggedIn(response.logged_in)) { finishLogin(); showError('تعذر تأك
 var user = attemptUser, pass = attemptPass;
 signedIn = true; loginTimestamp = now(); earlyNegativeCount = 0;
 finishLogin(); finishLogout(); clearError(); resetBadCredentials();
-if (user) rememberCard(user, pass);
+if (user && rememberEnabled()) rememberCard(user, pass);
 attemptUser = ''; attemptPass = '';
 statusOpen(); if (user) setText(el('username'), user);
 startStatus();
@@ -352,6 +374,13 @@ finishLogin(); loginOpen();
 var original = trim(response.error_orig || '') || trim(response.error || '');
 showError(readableError(original));
 recordBadCredentials(original);
+if (cfg.chapEnabled && storageSet(safeSession(), LOGIN_ERROR_KEY, original)) {
+  /* The next response can have a new challenge. Reload the login template,
+     never replay a CHAP digest or store a password for retry. */
+  storageSet(safeSession(), 'jawhara_last_attempt_username', attemptUser);
+  attemptUser = ''; attemptPass = '';
+  if (w.location && w.location.replace) { w.location.replace(routeUrl('login')); return; }
+}
 attemptUser = ''; attemptPass = '';
 }
 function loginStartReply(response) {
@@ -367,7 +396,7 @@ return;
 }
 setTimeout(function () {
 if (!loginPending) return;
-request('/status?var=callBack&t=' + now(), {kind:'verify',next:function (ok) {
+request(addQuery(routeUrl('status'), 'var=callBack&t=' + now()), {kind:'verify',next:function (ok) {
 if (!ok && loginPending) verifyLogin(count + 1);
 }});
 }, count ? 650 : 200);
@@ -462,15 +491,28 @@ epoch++;
 if ($submit) { $submit.disabled = true; addClass($submit, 'processing'); }
 clearError();
 var body = 'username=' + encodeURIComponent(user);
-if (cfg.passwordRequired) body += '&password=' + encodeURIComponent(pass);
-request('/login?var=callBack', {kind:'login',method:'POST',body:body});
+if (cfg.passwordRequired) {
+var sentPassword = pass;
+if (cfg.chapEnabled) {
+  if (!w.PortalChap || typeof w.PortalChap.response !== 'function' || !cfg.chapId || !cfg.chapChallenge) {
+    finishLogin(); attemptUser = ''; attemptPass = '';
+    showError('تعذر إعداد الدخول الآمن، أعد تحميل الصفحة أو تواصل مع الدعم');
+    return false;
+  }
+  sentPassword = w.PortalChap.response(cfg.chapId, pass, cfg.chapChallenge);
+}
+body += '&password=' + encodeURIComponent(sentPassword);
+}
+/* Captive portal stays on its configured login service; do not send the
+   original password as PAP when CHAP is active. */
+request(addQuery(routeUrl('login'), 'var=callBack'), {kind:'login',method:'POST',body:body});
 return false;
 }
 function logout() {
 if (!signedIn || logoutPending) return;
 logoutPending = true; epoch++; stopStatus();
 if ($logout) $logout.disabled = true;
-request('/logout?erase-cookie=true&var=callBack', {kind:'logout'});
+request(addQuery(routeUrl('logout'), 'erase-cookie=true&var=callBack'), {kind:'logout'});
 }
 function openPopup(target) {
 if (!target) return;
@@ -498,8 +540,11 @@ setText(h, new w.Intl.DateTimeFormat('ar-SA-u-ca-islamic', {day:'numeric',month:
 }} catch (ignore) { setText(h, ''); }
 }
 function simplifyOnOldDevices() {
-var ua = (w.navigator && w.navigator.userAgent || ''), slow = /Android [23456](?:\.|;)/i.test(ua);
-if (w.navigator && typeof w.navigator.hardwareConcurrency === 'number' && w.navigator.hardwareConcurrency <= 2) slow = true;
+var nav = w.navigator || {}, ua = nav.userAgent || '';
+var match = /Android\s+(\d+)/i.exec(ua), slow = !!(match && Number(match[1]) <= 10);
+if (typeof nav.hardwareConcurrency === 'number' && nav.hardwareConcurrency <= 4) slow = true;
+if (typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 2) slow = true;
+if (nav.connection && (nav.connection.saveData || /^(2g|slow-2g)$/.test(nav.connection.effectiveType || ''))) slow = true;
 if (slow) addClass(d.documentElement, 'low-performance');
 }
 function initInput() {
@@ -545,7 +590,12 @@ function init() {
 $login = el('login'); $status = el('status'); $form = d.forms.login;
 $submit = d.querySelector('.login-submit'); $logout = d.querySelector('.logout-submit'); $error = el('error');
 simplifyOnOldDevices(); renderDates(); resetStatus();
-setupPopups(); initInput(); initPasswordVisibility(); initTheme(); renderCards();
+setupPopups(); initInput(); initPasswordVisibility(); initTheme(); initRememberCards(); renderCards();
+var rememberedUser = storageGet(safeSession(), 'jawhara_last_attempt_username');
+if (rememberedUser && $form && $form.elements && $form.elements.namedItem('username')) {
+  $form.elements.namedItem('username').value = rememberedUser;
+  storageRemove(safeSession(), 'jawhara_last_attempt_username');
+}
 showRedirectedLoginError();
 if ($form) $form.addEventListener('submit', function (event) {
 if (event.preventDefault) event.preventDefault(); else event.returnValue = false;
@@ -556,7 +606,7 @@ var clearHistory = el('clearPreviousCards');
 if (clearHistory) clearHistory.addEventListener('click', clearCards, false);
 d.addEventListener('visibilitychange', function () { if (signedIn && !logoutPending && !d.hidden) scheduleStatus(); }, false);
 isBlocked();
-request('/status?var=callBack&t=' + now(), {kind:'boot'});
+request(addQuery(routeUrl('status'), 'var=callBack&t=' + now()), {kind:'boot'});
 }
 w.PortalDiagnostics = { isLoggedIn:isLoggedIn, normalize:normalize, readableError:readableError, classifyHotspotError:classifyHotspotError };
 ready(init);
