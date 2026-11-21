@@ -40,7 +40,7 @@ class HighPriorityTests(unittest.TestCase):
         self.assertIn('60000',script)
         for f in ('index.html','login.html'):
             html=(ROOT/f).read_text()
-            self.assertIn('jawhara-priority-r7',html)
+            self.assertIn('jawhara-r8',html)
             self.assertNotIn('jawhara-performance-r6',html)
 
     def test_accessible_fallback_and_low_cost_graphics(self):

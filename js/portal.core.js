@@ -32,10 +32,14 @@ function storageRemove(storage, key) { try { if (storage) storage.removeItem(key
 function safeLocal() { try { return w.localStorage; } catch (ignore) { return null; } }
 function safeSession() { try { return w.sessionStorage; } catch (ignore) { return null; } }
 function normalize(value, isUsername) {
-var str = String(value == null ? '' : value).replace(/[٠-٩۰-۹]/g, function (c) {
+var str = String(value == null ? '' : value);
+/* Passwords are opaque credentials: rewriting Arabic digits changes the secret.
+   Card usernames, by contrast, are normalized for keypad compatibility. */
+if (!isUsername) return str;
+str = str.replace(/[٠-٩۰-۹]/g, function (c) {
 var n = c.charCodeAt(0); return String(n >= 1776 ? n - 1776 : n - 1632);
 });
-return isUsername ? str.replace(/[\s\u200B-\u200D\uFEFF]/g, '') : str;
+return str.replace(/[\s\u200B-\u200D\uFEFF]/g, '');
 }
 function safeDecode(v) {
 var s = String(v == null ? '' : v);
@@ -215,12 +219,24 @@ function rememberEnabled() {
 var input = el('rememberCards');
 return !!(input && input.checked);
 }
+function eraseStoredCredentials() {
+recentCards = [];
+storageRemove(safeLocal(), STORE);
+storageRemove(safeLocal(), 'jawhara_success_cards_v2');
+deleteLegacyCookie('savedHotspotCards');
+deleteLegacyCookie('username');
+}
 function initRememberCards() {
 var input = el('rememberCards'); if (!input) return;
 input.checked = storageGet(safeLocal(), REMEMBER_PREF) === 'yes';
 input.addEventListener('change', function () {
 if (input.checked) storageSet(safeLocal(), REMEMBER_PREF, 'yes');
-else storageRemove(safeLocal(), REMEMBER_PREF);
+else {
+  storageRemove(safeLocal(), REMEMBER_PREF);
+  /* Revoking consent removes previous plaintext credentials immediately. */
+  eraseStoredCredentials();
+  renderCards();
+}
 }, false);
 }
 function migrateCards() {
@@ -233,6 +249,11 @@ if (recentCards.length && saveCards()) storageRemove(safeLocal(), 'jawhara_succe
 deleteLegacyCookie('savedHotspotCards');
 }
 function loadCards() {
+/* Old stores must not be imported unless the explicit opt-in is active. */
+if (storageGet(safeLocal(), REMEMBER_PREF) !== 'yes') {
+  eraseStoredCredentials();
+  return;
+}
 var raw = storageGet(safeLocal(), STORE), stored;
 try { stored = raw ? JSON.parse(raw) : null; } catch (ignore) { stored = null; }
 if (stored && stored.cards) {
@@ -280,11 +301,8 @@ list.appendChild(button);
 })(recentCards[i]);
 }
 function clearCards() {
-recentCards = []; storageRemove(safeLocal(), STORE);
-storageRemove(safeLocal(), 'jawhara_success_cards_v2');
-storageRemove(safeLocal(), REMEMBER_PREF);
+eraseStoredCredentials(); storageRemove(safeLocal(), REMEMBER_PREF);
 var remember = el('rememberCards'); if (remember) remember.checked = false;
-deleteLegacyCookie('savedHotspotCards'); deleteLegacyCookie('username');
 renderCards();
 }
 function formatBytes(v) {
@@ -298,15 +316,21 @@ if (value < 1073741824) return (value / 1048576).toFixed(1) + ' ميجابايت
 return (value / 1073741824).toFixed(2) + ' جيجابايت';
 }
 function formatTime(v) {
-var s = trim(v), parts, units = {w:'أسبوع', d:'يوم', h:'ساعة', m:'دقيقة', s:'ثانية'};
+var s = trim(v), result = [], units = {w:'أسبوع',d:'يوم',h:'ساعة',m:'دقيقة',s:'ثانية'};
 if (!s || s === '---' || s.toLowerCase() === 'unlimited') return 'غير محدود';
-if (/^\d+(?::\d{1,2}){1,2}$/.test(s)) {
-var a = s.split(':');
-return a.length === 2 ? a[0] + ' دقيقة ' + a[1] + ' ثانية' : a[0] + ' ساعة ' + a[1] + ' دقيقة ' + a[2] + ' ثانية';
+/* RouterOS uptime can be 1w2d03:04:05, 1d02:30:45, 01:02:03 or 1h2m3s. */
+var mixed = /^((?:\d+\s*[wd]\s*)*)(\d{1,3}:\d{1,2}(?::\d{1,2})?)$/.exec(s);
+if (mixed) {
+  var prefix = mixed[1], p = /(\d+)\s*([wd])/g, part;
+  while ((part = p.exec(prefix)) !== null) result.push(Number(part[1]) + ' ' + units[part[2]]);
+  var clock = mixed[2].split(':'), keys = clock.length === 3 ? ['h','m','s'] : ['m','s'];
+  for (var i = 0; i < clock.length; i++) result.push(Number(clock[i]) + ' ' + units[keys[i]]);
+  return result.join(' ');
 }
-parts = []; var re = /(\d+)\s*([wdhms])/g, match;
-while ((match = re.exec(s)) !== null) parts.push(match[1] + ' ' + units[match[2]]);
-return parts.length ? parts.join(' ') : s;
+var pattern = /(\d+)\s*([wdhms])/g, match;
+while ((match = pattern.exec(s)) !== null) result.push(Number(match[1]) + ' ' + units[match[2]]);
+/* Unknown formats remain unchanged instead of fabricating incomplete usage. */
+return result.length && !trim(s.replace(pattern, '')) ? result.join(' ') : s;
 }
 function resetStatus() {
 var ids = ['username','remain_bytes_total','session_time_left','uptime','bytes_in','bytes_out'];
@@ -604,10 +628,10 @@ submit();
 if ($logout) $logout.addEventListener('click', logout, false);
 var clearHistory = el('clearPreviousCards');
 if (clearHistory) clearHistory.addEventListener('click', clearCards, false);
-d.addEventListener('visibilitychange', function () { if (signedIn && !logoutPending && !d.hidden) scheduleStatus(); }, false);
+d.addEventListener('visibilitychange', function () { if (signedIn && !logoutPending) scheduleStatus(); }, false);
 isBlocked();
 request(addQuery(routeUrl('status'), 'var=callBack&t=' + now()), {kind:'boot'});
 }
-w.PortalDiagnostics = { isLoggedIn:isLoggedIn, normalize:normalize, readableError:readableError, classifyHotspotError:classifyHotspotError };
+w.PortalDiagnostics = { isLoggedIn:isLoggedIn, normalize:normalize, formatTime:formatTime, readableError:readableError, classifyHotspotError:classifyHotspotError };
 ready(init);
 })(window, document);

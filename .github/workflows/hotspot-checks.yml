@@ -23,6 +23,7 @@ jobs:
           node --check js/portal.core.js
           node tests/test_chap.js
           node tests/test_diagnostics.js
+          node tests/test_r8.js
       - name: Static and security regression tests
         run: python -m unittest discover -s tests -v
   browser-tests:
@@ -41,3 +42,24 @@ jobs:
         env:
           RUN_BROWSER_TESTS: '1'
         run: python -m unittest discover -s tests -v
+  release-package:
+    name: Package RouterOS after all tests
+    needs: [source-tests, browser-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Package only router runtime assets
+        run: python scripts/build_hotspot.py --output dist
+      - name: Verify archive checksum
+        run: cd dist && sha256sum -c Jawhrah2-r8-hotspot.zip.sha256
+      - name: Publish verified RouterOS package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jawhrah2-r8-routeros-hotspot
+          path: |
+            dist/Jawhrah2-r8-hotspot.zip
+            dist/Jawhrah2-r8-hotspot.zip.sha256
+          if-no-files-found: error
