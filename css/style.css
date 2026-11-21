@@ -56,3 +56,17 @@ html,body{overflow-x:hidden}
 #previous-cards .app-bot{max-height:90vh;overflow-y:auto}
 @media(max-width:359px){.brand-identity{gap:7px}.brand-copy h1{font-size:24px}.brand-copy p{white-space:normal;font-size:10px}.brand-separator{height:68px}.code-logo{width:82px;height:82px;flex-basis:82px}.logo-core{width:55px;height:55px;font-size:52px}#jawharaAnimatedLogo .logo-core.icon-diamond:before{font-size:54px}.login-field,.login-actions-row{width:96%}}
 @media(max-width:480px){.logo-core{filter:none}.logo-core.icon-diamond:after{filter:none}.logo-orbit{box-shadow:none}}
+
+/* Priority r7: light graphics on constrained Android; retain one centered spinning arc. */
+html.low-performance .logo-orbit:after{box-shadow:none!important}
+html.low-performance .brand-separator,html.low-performance .brand-pulse{box-shadow:none!important}
+html.low-performance #jawharaAnimatedLogo .orbit-a{-webkit-animation:jawharaSpin 4s linear infinite!important;animation:jawharaSpin 4s linear infinite!important}
+html.low-performance #jawharaAnimatedLogo .orbit-b,html.low-performance #jawharaAnimatedLogo .orbit-c{-webkit-animation:none!important;animation:none!important}
+@media(max-width:480px){
+  .app-bot,.login-frame,.services-frame{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+  .logo-core:before,.logo-core:after{filter:none!important}
+}
+.remember-cards-option{display:flex;align-items:center;justify-content:center;gap:7px;max-width:390px;margin:10px auto 2px;padding:8px 10px;color:var(--ink);font-size:12px;line-height:1.7;cursor:pointer}
+.remember-cards-option input{width:18px;height:18px;min-width:18px;accent-color:var(--accent);cursor:pointer}
+.remember-cards-option span{flex:1;text-align:right}
+@media(prefers-reduced-motion:reduce){html.low-performance #jawharaAnimatedLogo .logo-orbit{-webkit-animation:none!important;animation:none!important}}

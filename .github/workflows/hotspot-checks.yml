@@ -1,10 +1,11 @@
-name: Hotspot integrity checks
+name: Hotspot integrity and browser checks
 on:
   pull_request:
   push:
     branches: [main, 'improve/**']
 jobs:
-  static-tests:
+  source-tests:
+    name: Source, MD5 and RouterOS tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,9 +15,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install parsers
+        run: python -m pip install beautifulsoup4 tinycss2
+      - name: JavaScript syntax and CHAP vectors
+        run: |
+          node --check js/chap-md5.js
+          node --check js/portal.core.js
+          node tests/test_chap.js
+          node tests/test_diagnostics.js
+      - name: Static and security regression tests
+        run: python -m unittest discover -s tests -v
+  browser-tests:
+    name: Chromium login and viewport tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install test dependencies
-        run: pip install beautifulsoup4 tinycss2
-      - name: Validate JavaScript syntax
-        run: node --check js/portal.core.js
-      - name: Validate RouterOS mappings and source rules
+        run: python -m pip install playwright beautifulsoup4 tinycss2
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Test real browser with mock RouterOS
+        env:
+          RUN_BROWSER_TESTS: '1'
         run: python -m unittest discover -s tests -v
