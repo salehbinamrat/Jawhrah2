@@ -1,0 +1,18 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const js = fs.readFileSync(__dirname + '/../js/portal.core.js', 'utf8');
+const window = { PORTAL_CONFIG:{passwordRequired:true} };
+const document = { readyState:'loading', addEventListener(){}, getElementById(){return null;} };
+vm.runInNewContext(js, {window,document,setTimeout,clearTimeout,XMLHttpRequest:function(){}}, {filename:'portal.core.js'});
+const api = window.PortalDiagnostics;
+assert.equal(api.normalize('١٢٣٤',true),'1234', 'convert Arabic username digits');
+assert.equal(api.normalize('١٢٣٤',false),'١٢٣٤','password must remain unchanged');
+assert.equal(api.formatTime('1d02:30:45'), '1 يوم 2 ساعة 30 دقيقة 45 ثانية');
+assert.equal(api.formatTime('2w3d04:05:06'), '2 أسبوع 3 يوم 4 ساعة 5 دقيقة 6 ثانية');
+assert.equal(api.formatTime('1h2m3s'), '1 ساعة 2 دقيقة 3 ثانية');
+assert.equal(api.formatTime('01:23:45'), '1 ساعة 23 دقيقة 45 ثانية');
+assert.equal(api.formatTime('10:04'), '10 دقيقة 4 ثانية');
+assert.equal(api.formatTime('arbitrary'), 'arbitrary');
+console.log('PASS: password integrity and combined RouterOS uptime formats');

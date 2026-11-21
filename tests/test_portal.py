@@ -108,7 +108,7 @@ class PortalTests(unittest.TestCase):
         cls.thread.start()
         cls.url = f'http://127.0.0.1:{cls.httpd.server_port}/login'
         cls.play = sync_playwright().start()
-        cls.browser = cls.play.chromium.launch(headless=True, args=['--no-sandbox'])
+        cls.browser = cls.play.chromium.launch(headless=True, executable_path=os.environ.get('CHROMIUM_EXECUTABLE') or None, args=['--no-sandbox'])
     @classmethod
     def tearDownClass(cls):
         cls.browser.close(); cls.play.stop(); cls.httpd.shutdown(); cls.httpd.server_close()
@@ -165,6 +165,27 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(saved['cards'][0]['username'],'ok')
         self.assertEqual(saved['cards'][0]['password'],'123')
         self.assertIsInstance(saved['cards'][0]['savedAt'], int)
+    def test_opt_out_erases_old_saved_passwords(self):
+        self.page.locator('#rememberCards').check()
+        self.submit('ok'); self.page.locator('#status.active').wait_for(timeout=10000)
+        self.assertIsNotNone(self.page.evaluate('localStorage.getItem("jawhara_success_cards_v3")'))
+        # Disabling consent must revoke local password storage immediately.
+        self.page.evaluate('document.getElementById("rememberCards").click()')
+        self.assertIsNone(self.page.evaluate('localStorage.getItem("jawhara_success_cards_v3")'))
+        self.assertIsNone(self.page.evaluate('localStorage.getItem("jawhara_remember_cards_opt_in_v1")'))
+
+    def test_legacy_passwords_without_consent_are_purged(self):
+        self.page.evaluate('''() => {
+            localStorage.removeItem('jawhara_remember_cards_opt_in_v1');
+            localStorage.setItem('jawhara_success_cards_v2', JSON.stringify({savedAt:Date.now(),cards:[{username:'old',password:'secret'}]}));
+            localStorage.setItem('jawhara_success_cards_v3', JSON.stringify({cards:[{username:'old2',password:'secret',savedAt:Date.now()}]}));
+        }''')
+        self.page.reload(wait_until='domcontentloaded')
+        self.assertIsNone(self.page.evaluate('localStorage.getItem("jawhara_success_cards_v2")'))
+        self.assertIsNone(self.page.evaluate('localStorage.getItem("jawhara_success_cards_v3")'))
+        self.page.locator('button[parent-id="previous-cards"]').click()
+        self.assertTrue(self.page.locator('#previousCardsEmpty').is_visible())
+
     def test_router_error_categories(self):
         for user, expected in [('busy','جهاز آخر'),('expired','صلاحية'),('quota','رصيد'),('profile','باقة فعالة'),('bad','الكرت خطأ'),('unknown','تعذر تسجيل الدخول')]:
             self.page.locator('input[name="username"]').fill(user)
